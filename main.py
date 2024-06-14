@@ -5,49 +5,26 @@ from db.db_oracle_config import DbOracleConfig
 from dotenv import load_dotenv
 from datetime import datetime
 
-
 def preencher_tabela_geo_clientes(db_config, codcliente, nome, cgc, latitude=None, longitude=None):
     date_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    if not cliente_existe(db_config, codcliente):
-        sql_insert = """
-            INSERT INTO GEO_CLIENTES (CODCLIENTE, RAZAO, CNPJ, LATITUDE, LONGITUDE, DATE_TIME)
-            VALUES (:1, :2, :3, :4, :5, TO_TIMESTAMP(:6, 'YYYY-MM-DD HH24:MI:SS'))
-        """
-        execution_status, result = db_config.execute(sql_insert,
-                                                     (codcliente, nome, cgc, latitude, longitude, date_time))
+    sql_insert = """
+        INSERT INTO SIGA.GEO_CLIENTES (CODCLIENTE, RAZAO, CNPJ, LATITUDE, LONGITUDE, DATE_TIME)
+        VALUES (:1, :2, :3, :4, :5, TO_TIMESTAMP(:6, 'YYYY-MM-DD HH24:MI:SS'))
+    """
+    execution_status, result = db_config.execute(sql_insert, (codcliente, nome, cgc, latitude, longitude, date_time))
 
-        if execution_status:
-            print("Dados inseridos com sucesso na tabela GEO_CLIENTES.")
-        else:
-            print("Erro ao inserir dados na tabela GEO_CLIENTES:", result)
-    else:
-        print(f"Cliente com CODCLIENTE {codcliente} já existe na tabela GEO_CLIENTES. Pulando inserção.")
-
-    atualizar_contagem_requests(db_config)
-
-
-def cliente_existe(db_config, codcliente):
-    sql_check = "SELECT 1 FROM GEO_CLIENTES WHERE CODCLIENTE = :1"
-    execution_status, result = db_config.execute(sql_check, (codcliente,))
     if execution_status:
-        return bool(result)
+        print("Dados inseridos com sucesso na tabela SIGA.GEO_CLIENTES.")
     else:
-        print("Erro ao verificar existência do cliente na tabela GEO_CLIENTES:", result)
-        return False
+        print("Erro ao inserir dados na tabela SIGA.GEO_CLIENTES:", result)
 
 
-def obter_ultimo_codcliente(db_config):
-    sql_last_cod = "SELECT MAX(CODCLIENTE) AS ULTIMO_CODCLIENTE FROM GEO_CLIENTES"
-    execution_status, result = db_config.execute(sql_last_cod)
-    if execution_status and result:
-        return result[0]['ULTIMO_CODCLIENTE']
-    else:
-        print("Erro ao obter o último CODCLIENTE da tabela GEO_CLIENTES:", result)
-        return None
+def obter_coordenadas_endereco(db_config, endereco):
+    if verificar_limite_alcancado(db_config):
+        print("Limite de requests alcançado. Não será feita a chamada à API.")
+        return None, None
 
-
-def obter_coordenadas_endereco(endereco):
     load_dotenv()
     map_api_key = os.getenv("MAP_API_KEY")
     url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{endereco}.json?access_token={map_api_key}"
@@ -57,6 +34,7 @@ def obter_coordenadas_endereco(endereco):
         data = response.json()
         if data['features']:
             coordinates = data['features'][0]['geometry']['coordinates']
+            atualizar_contagem_requests(db_config)
             return coordinates[1], coordinates[0]
         else:
             print("Endereço não encontrado:", endereco)
@@ -68,49 +46,56 @@ def obter_coordenadas_endereco(endereco):
 
 def atualizar_contagem_requests(db_config):
     mes = datetime.now().strftime('%Y-%m')
-    sql_select = "SELECT contagem_mes FROM MONITORAMENTO_API_GEOCLIENTE WHERE mes = :1"
+    sql_select = "SELECT contagem_mes FROM siga.MONITORAMENTO_API_GEOCLIENTE WHERE mes = :1"
     execution_status, result = db_config.execute(sql_select, (mes,))
 
     if execution_status and result:
         sql_update = """
-            UPDATE MONITORAMENTO_API_GEOCLIENTE
+            UPDATE siga.MONITORAMENTO_API_GEOCLIENTE
             SET contagem_mes = contagem_mes + 1,
                 ultima_atualizacao = SYSTIMESTAMP,
-                limite_alcancado = CASE WHEN contagem_mes + 1 >= 100000 THEN 'S' ELSE 'N' END
+                limite_alcancado = CASE WHEN contagem_mes + 1 >= 90000 THEN 'S' ELSE 'N' END
             WHERE mes = :1
         """
         db_config.execute(sql_update, (mes,))
     else:
         sql_insert = """
-            INSERT INTO MONITORAMENTO_API_GEOCLIENTE (mes, contagem_mes, ultima_atualizacao, limite_alcancado)
+            INSERT INTO siga.MONITORAMENTO_API_GEOCLIENTE (mes, contagem_mes, ultima_atualizacao, limite_alcancado)
             VALUES (:1, 1, SYSTIMESTAMP, 'N')
         """
         db_config.execute(sql_insert, (mes,))
+    return True
+
 
 def verificar_limite_alcancado(db_config):
     mes_atual = datetime.now().strftime('%Y-%m')
-    sql_select = "SELECT limite_alcancado FROM MONITORAMENTO_API_GEOCLIENTE WHERE mes = :1"
+    sql_select = "SELECT limite_alcancado, contagem_mes FROM siga.MONITORAMENTO_API_GEOCLIENTE WHERE mes = :1"
     execution_status, result = db_config.execute(sql_select, (mes_atual,))
     if execution_status and result:
         limite_alcancado = result[0]['LIMITE_ALCANCADO']
-        if limite_alcancado == 'S':
+        requests_totais = result[0]['CONTAGEM_MES']
+        if limite_alcancado == 'S' and requests_totais >= 90000:
             print("Limite de requests já foi alcançado para este mês. Interrompendo o código.")
             return True
+        else:
+            return False
+
+    elif execution_status and not result :
+        atualizar_contagem_requests(db_config)
+        return False
     else:
-        print("Erro ao verificar o limite alcançado na tabela MONITORAMENTO_API_GEOCLIENTE.")
-    return False
+        print("Erro ao verificar o limite alcançado na tabela siga.MONITORAMENTO_API_GEOCLIENTE.")
+    return True
 
 
 def main():
-    cx_Oracle.init_oracle_client(lib_dir=r'C:\Oracle\instantclient_21_13')
     db_config = DbOracleConfig()
 
     if verificar_limite_alcancado(db_config):
+        print("Limite de requests alcançado. Encerrando a execução do script.")
         return
 
-    ultimo_codcliente = obter_ultimo_codcliente(db_config)
-    if ultimo_codcliente is not None:
-        sql_query = f"""
+    sql_query = f"""
         SELECT distinct 
             codcliente,
             a1_nome,
@@ -139,12 +124,15 @@ def main():
                             1
                     END                                         flag_exist,
                     nvl(MAX(date_time), sysdate)  AS date_time,
-                    EXTRACT(DAY FROM(sysdate - MAX(date_time))) AS diff_hours
+                    nvl(EXTRACT(DAY FROM(sysdate - MAX(date_time))),99999999) AS diff_hours
                 FROM
                     siga.mv_jsl_fv_cliente  a
-                    LEFT OUTER JOIN dev_wilian.geo_clientes g ON a.codcliente = g.codcliente
+                    LEFT OUTER JOIN siga.geo_clientes g ON a.codcliente = g.codcliente
+                    left outer join siga.MONITORAMENTO_API_GEOCLIENTE m on mes = to_char(sysdate, 'yyyy-mm') 
                 WHERE
-                        vendmct <> vendmct2 
+                       nvl(m.contagem_mes,0) < 90000
+                       and nvl(m.limite_alcancado,'N') = 'N'
+                       and a1_ystatus in ('A','B','O')  
                 GROUP BY
                     a.codcliente,
                     a1_nome,
@@ -160,17 +148,22 @@ def main():
                             1
                     END
             )
-            where   ( flag_exist = 0  or (flag_exist = 1  and diff_hours >= 1  ) )
+            where   ( flag_exist = 0  or (flag_exist = 1  and diff_hours >= 1000  ) )
         ORDER BY
             flag_exist,
-            date_time,
-            codcliente ASC
+            diff_hours desc,
+            date_time desc ,
+            codcliente ASC 
         """
 
-        execution_status, result = db_config.execute(sql_query)
+    execution_status, result = db_config.execute(sql_query)
 
-        if execution_status:
+    if execution_status:
             for row in result:
+                if verificar_limite_alcancado(db_config):
+                    print("Limite de requests alcançado durante o processamento. Encerrando a execução do script.")
+                    return
+
                 codcliente = row['CODCLIENTE']
                 nome = row['A1_NOME']
                 cgc = row['A1_CGC']
@@ -183,7 +176,7 @@ def main():
                     print("Código do Cliente:", codcliente)
                     print("Endereço:", endereco)
 
-                    latitude, longitude = obter_coordenadas_endereco(endereco)
+                    latitude, longitude = obter_coordenadas_endereco(db_config, endereco)
                     if latitude is not None and longitude is not None:
                         preencher_tabela_geo_clientes(db_config, codcliente, nome, cgc, latitude, longitude)
                     else:
@@ -192,7 +185,7 @@ def main():
                     print(f"Erro ao processar o cliente {codcliente}: {str(e)}")
                     preencher_tabela_geo_clientes(db_config, codcliente, nome, cgc)
                     continue
-        else:
+    else:
             print("Nenhum resultado retornado pela consulta SQL.")
 
 
