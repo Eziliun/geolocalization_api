@@ -27,7 +27,7 @@ def obter_coordenadas_endereco(db_config, endereco):
 
     load_dotenv()
     map_api_key = os.getenv("MAP_API_KEY")
-    url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{endereco}.json?access_token={map_api_key}"
+    url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{endereco}.json?bbox=-41.3483,-7.5255,-37.6834,-2.7835&access_token={map_api_key}"
 
     try:
         response = requests.get(url)
@@ -89,6 +89,7 @@ def verificar_limite_alcancado(db_config):
 
 
 def main():
+    cx_Oracle.init_oracle_client(lib_dir=r'C:\Oracle\instantclient_21_13')
     db_config = DbOracleConfig()
 
     if verificar_limite_alcancado(db_config):
@@ -96,7 +97,7 @@ def main():
         return
 
     sql_query = f"""
-        SELECT distinct 
+       SELECT distinct 
             codcliente,
             a1_nome,
             a1_cgc,
@@ -122,17 +123,19 @@ def main():
                             0
                         ELSE
                             1
-                    END                                         flag_exist,
-                    nvl(MAX(date_time), sysdate)  AS date_time,
-                    nvl(EXTRACT(DAY FROM(sysdate - MAX(date_time))),99999999) AS diff_hours
+                    END AS flag_exist,
+                    NVL(MAX(date_time), sysdate) AS date_time,
+                    NVL(EXTRACT(DAY FROM (sysdate - MAX(date_time))), 99999999) AS diff_hours
                 FROM
-                    siga.mv_jsl_fv_cliente  a
+                    siga.mv_jsl_fv_cliente a
                     LEFT OUTER JOIN siga.geo_clientes g ON a.codcliente = g.codcliente
-                    left outer join siga.MONITORAMENTO_API_GEOCLIENTE m on mes = to_char(sysdate, 'yyyy-mm') 
+                    LEFT OUTER JOIN siga.MONITORAMENTO_API_GEOCLIENTE m ON mes = TO_CHAR(SYSDATE, 'yyyy-mm')
                 WHERE
-                       nvl(m.contagem_mes,0) < 90000
-                       and nvl(m.limite_alcancado,'N') = 'N'
-                       and a1_ystatus in ('A','B','O')  
+                    NVL(m.contagem_mes, 0) < 90000
+                    AND NVL(m.limite_alcancado, 'N') = 'N'
+                    AND a1_ystatus IN ('A', 'B', 'O')
+                    AND a1_est = 'CE'
+                    AND a.codcliente LIKE '027051%'
                 GROUP BY
                     a.codcliente,
                     a1_nome,
@@ -142,18 +145,15 @@ def main():
                     a1_est,
                     a1_bairro,
                     CASE
-                        WHEN g.codcliente IS NULL THEN
-                                0
-                        ELSE
-                            1
+                        WHEN g.codcliente IS NULL THEN 0 ELSE 1
                     END
             )
-            where   ( flag_exist = 0  or (flag_exist = 1  and diff_hours >= 1000  ) )
+        WHERE (flag_exist = 0 OR (flag_exist = 1 AND diff_hours >= 10))
         ORDER BY
             flag_exist,
-            diff_hours desc,
-            date_time desc ,
-            codcliente ASC 
+            diff_hours DESC,
+            date_time DESC,
+            codcliente ASC
         """
 
     execution_status, result = db_config.execute(sql_query)
@@ -167,7 +167,7 @@ def main():
                 codcliente = row['CODCLIENTE']
                 nome = row['A1_NOME']
                 cgc = row['A1_CGC']
-                endereco = f"{row['A1_END']}, {row['A1_MUN']} {row['A1_EST']}, {row['A1_BAIRRO']}"
+                endereco = f"{row['A1_EST']}, {row['A1_MUN']}, {row['A1_BAIRRO']}, {row['A1_END']}"
                 endereco = ' '.join(endereco.split())
 
                 try:
